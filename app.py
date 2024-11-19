@@ -219,6 +219,7 @@ async def help_command(update: Update, context: CallbackContext):
         "/stop <vm> - Stop a specific VM by name.\n"
         "/reset <vm> - Reset a specific VM by name.\n"
         "/screenshot <vm> - Take a screenshot of a specific VM.\n"
+        "/myid - Get your Telegram user ID (for setup).\n"
         "/help - Show this help message."
     )
     await update.message.reply_text(help_text)
