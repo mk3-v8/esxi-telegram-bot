@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram-bot
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ESXI_HOST=${ESXI_HOST}
+      - ESXI_USER=${ESXI_USER}
+      - ESXI_PASSWORD=${ESXI_PASSWORD}
+      - USER_PERMISSIONS=${USER_PERMISSIONS}
+    volumes:
+      - .:/app
+    restart: always 
