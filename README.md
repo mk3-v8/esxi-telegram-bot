@@ -2,6 +2,9 @@
 
 A Telegram bot designed to interact with an ESXi server, allowing authorized users to manage virtual machines (VMs) with commands such as listing, starting, stopping, resetting, and taking screenshots.
 
+
+![ESXi Telegram Bot](esxi_telegram.png)
+
 ## Features
 - List all VMs with their current status.
 - Start, stop, and reset VMs by name.
