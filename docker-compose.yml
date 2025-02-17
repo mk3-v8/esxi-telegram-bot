@@ -14,4 +14,5 @@ services:
       - USER_PERMISSIONS=${USER_PERMISSIONS}
     volumes:
       - .:/app
+      - ./keys:/root/.ssh
     restart: always 

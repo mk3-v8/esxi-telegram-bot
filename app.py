@@ -10,6 +10,8 @@ from requests.auth import HTTPBasicAuth
 import asyncio
 import urllib3
 import json
+import subprocess
+import paramiko
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 load_dotenv()
@@ -206,7 +208,86 @@ async def screenshot_vm(update: Update, context: CallbackContext):
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
 
+@permission_required('clone')
+async def clone_vm(update: Update, context: CallbackContext):
+    if not update.message:
+        return
+    
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("ERROR: Please provide both source VM name and new VM name.")
+        return
+    
+    source_vm_name, new_vm_name = args[0], args[1]
+    datastore = "HDD"  # Adjust based on your ESXi configuration
+    
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
+    try:
+        ssh.connect(ESXI_HOST, username=ESXI_USER, password=ESXI_PASSWORD)
+
+        commands = [
+            f"mkdir /vmfs/volumes/{datastore}/{new_vm_name}",
+            f"vmkfstools -i /vmfs/volumes/{datastore}/{source_vm_name}/{source_vm_name}.vmdk /vmfs/volumes/{datastore}/{new_vm_name}/{new_vm_name}.vmdk -d thin",
+            f"cp /vmfs/volumes/{datastore}/{source_vm_name}/{source_vm_name}.vmx /vmfs/volumes/{datastore}/{new_vm_name}/{new_vm_name}.vmx",
+            f"sed -i 's/displayName = \"{source_vm_name}\"/displayName = \"{new_vm_name}\"/g' /vmfs/volumes/{datastore}/{new_vm_name}/{new_vm_name}.vmx",
+            f"vim-cmd solo/registervm /vmfs/volumes/{datastore}/{new_vm_name}/{new_vm_name}.vmx"
+        ]
         
+        for command in commands:
+            stdin, stdout, stderr = ssh.exec_command(command)
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0:
+                await update.message.reply_text(f"ERROR: {stderr.read().decode().strip()}")
+                ssh.close()
+                return
+        
+        await update.message.reply_text(f"Thin clone of VM '{source_vm_name}' created as '{new_vm_name}' and registered in ESXi.")
+    
+    except Exception as e:
+        await update.message.reply_text(f"ERROR: Failed to clone VM: {str(e)}")
+    finally:
+        ssh.close()
+
+@permission_required('delete')
+async def delete_vm(update: Update, context: CallbackContext):
+    if not update.message:
+        return
+    
+    args = context.args
+    if len(args) < 1:
+        await update.message.reply_text("ERROR: Please provide the VM name to delete.")
+        return
+    
+    vm_name = args[0]
+    si = connect_to_esxi()
+    content = si.RetrieveContent()
+    vm = next((vm for vm in content.viewManager.CreateContainerView(
+        content.rootFolder, [vim.VirtualMachine], True).view if vm.name == vm_name), None)
+    
+    if not vm:
+        await update.message.reply_text(f"ERROR: VM '{vm_name}' not found.")
+        Disconnect(si)
+        return
+    
+    try:
+        # Power off VM if running
+        if vm.runtime.powerState == vim.VirtualMachinePowerState.poweredOn:
+            task = vm.PowerOff()
+            while task.info.state not in [vim.TaskInfo.State.success, vim.TaskInfo.State.error]:
+                pass
+            
+        # Unregister the VM
+        vm.UnregisterVM()
+        await update.message.reply_text(f"VM '{vm_name}' has been unregistered from ESXi.")
+        
+    except Exception as e:
+        await update.message.reply_text(f"ERROR: Failed to delete VM: {str(e)}")
+    finally:
+        Disconnect(si)
+
+
 async def get_user_id(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     await update.message.reply_text(f"Your Telegram user ID is: {user_id}")
@@ -219,6 +300,7 @@ async def help_command(update: Update, context: CallbackContext):
         "/stop <vm> - Stop a specific VM by name.\n"
         "/reset <vm> - Reset a specific VM by name.\n"
         "/screenshot <vm> - Take a screenshot of a specific VM.\n"
+        "/clone <vm> <new_vm> - Clone specific VM by name.\n"
         "/myid - Get your Telegram user ID (for setup).\n"
         "/help - Show this help message."
     )
@@ -232,6 +314,8 @@ def main():
     application.add_handler(CommandHandler("stop", stop_vm))
     application.add_handler(CommandHandler("reset", reset_vm))
     application.add_handler(CommandHandler("screenshot", screenshot_vm))
+    application.add_handler(CommandHandler("clone", clone_vm))
+    application.add_handler(CommandHandler("delete", delete_vm))
     application.add_handler(CommandHandler("myid", get_user_id))
     application.add_handler(CommandHandler("help", help_command))
 

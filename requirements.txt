@@ -3,3 +3,4 @@ python-dotenv
 pyVmomi
 requests
 urllib3
+paramiko
