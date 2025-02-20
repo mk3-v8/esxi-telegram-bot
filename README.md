@@ -1,15 +1,16 @@
 # ESXi Telegram Bot
 
-A Telegram bot designed to interact with an ESXi server, allowing authorized users to manage virtual machines (VMs) with commands such as listing, starting, stopping, resetting, and taking screenshots.
-
+A Telegram bot designed to interact with an ESXi server, allowing authorized users to manage virtual machines (VMs) with commands such as listing, starting, stopping, resetting, cloning, deleting, and taking screenshots.
 
 ![ESXi Telegram Bot](esxi_telegram.png)
 
 ## Features
-- List all VMs with their current status.
-- Start, stop, and reset VMs by name.
-- Take screenshots of VMs and send them directly through Telegram.
-- User-based permission system to control access to commands.
+- **List VMs**: Get a list of all VMs with their current status.
+- **Start, Stop, and Reset VMs**: Easily manage VM power states.
+- **Clone VM**: Create a new VM by cloning an existing one with dynamic datastore selection.
+- **Delete VM**: Unregister and completely remove a VM along with its storage.
+- **Take VM Screenshots**: Capture and send screenshots of VMs directly through Telegram.
+- **User-based Permission System**: Control access to commands for specific users.
 
 ## Prerequisites
 - Docker and Docker Compose installed on your system.
@@ -49,11 +50,14 @@ Start interacting with your bot in Telegram and use the following commands:
 - `/stop <vm>` - Stop a specific VM by name.
 - `/reset <vm>` - Reset a specific VM by name.
 - `/screenshot <vm>` - Take a screenshot of a specific VM.
+- `/clone <vm> <new_vm>` - Clone specific VM by name.
+- `/delete <vm>` - Destroy and delete a specific VM by name.
 - `/help` - Show the list of available commands and their descriptions.
 - `/myid` - Get your Telegram user ID (for setup).
 
 ## Security Notes
 - Ensure the Telegram bot token and ESXi credentials are kept secure.
+- Limit bot access to trusted users using the user permission system.
 
 ## Troubleshooting
 - **Container logs**: Use `docker logs telegram-bot` to check logs.

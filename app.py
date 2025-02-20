@@ -422,7 +422,7 @@ async def help_command(update: Update, context: CallbackContext):
         "/reset <vm> - Reset a specific VM by name.\n"
         "/screenshot <vm> - Take a screenshot of a specific VM.\n"
         "/clone <vm> <new_vm> - Clone specific VM by name.\n"
-        "/delete <vm> - Destroy and delete a specific VM.\n"
+        "/delete <vm> - Destroy and delete a specific VM by name.\n"
         "/myid - Get your Telegram user ID (for setup).\n"
         "/help - Show this help message."
     )
