@@ -22,6 +22,16 @@ ESXI_USER = os.getenv('ESXI_USER')
 ESXI_PASSWORD = os.getenv('ESXI_PASSWORD')
 USER_PERMISSIONS = json.loads(os.getenv('USER_PERMISSIONS'))
 
+# def connect_to_vcenter():
+#     context = ssl._create_unverified_context()
+#     si = SmartConnect(
+#         host=os.getenv('VCENTER_HOST'), 
+#         user=os.getenv('VCENTER_USER'),
+#         pwd=os.getenv('VCENTER_PASSWORD'),
+#         sslContext=context
+#     )
+#     return si
+
 def connect_to_esxi():
     context = ssl._create_unverified_context()
     si = SmartConnect(
@@ -212,43 +222,120 @@ async def screenshot_vm(update: Update, context: CallbackContext):
 async def clone_vm(update: Update, context: CallbackContext):
     if not update.message:
         return
-    
+
     args = context.args
     if len(args) < 2:
         await update.message.reply_text("ERROR: Please provide both source VM name and new VM name.")
         return
-    
+
     source_vm_name, new_vm_name = args[0], args[1]
-    datastore = "HDD"  # Adjust based on your ESXi configuration
-    
+
+    # Connect to ESXi
+    si = connect_to_esxi()
+    content = si.RetrieveContent()
+
+    # Find the source VM
+    vm = next((vm for vm in content.viewManager.CreateContainerView(
+        content.rootFolder, [vim.VirtualMachine], True).view if vm.name == source_vm_name), None)
+
+    if not vm:
+        await update.message.reply_text(f"ERROR: Source VM '{source_vm_name}' not found.")
+        Disconnect(si)
+        return
+
+    # Retrieve the datastore of the source VM
+    source_vm_path = vm.config.files.vmPathName  # Example: "[datastore1] AD/AD.vmx"
+    source_datastore_name, source_vm_folder = source_vm_path.strip("[]").split("] ")
+    source_vm_folder = source_vm_folder.split("/")[0]  # Extract folder name
+
+    # Get the datastore with the most free space for destination
+    datastores = content.viewManager.CreateContainerView(
+        content.rootFolder, [vim.Datastore], True
+    ).view
+
+    if not datastores:
+        await update.message.reply_text("ERROR: No datastores found.")
+        Disconnect(si)
+        return
+
+    # Select the best datastore (with max free space)
+    best_datastore = max(datastores, key=lambda ds: ds.summary.freeSpace)
+    destination_datastore_name = best_datastore.summary.name
+
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    
+
     try:
         ssh.connect(ESXI_HOST, username=ESXI_USER, password=ESXI_PASSWORD)
 
-        commands = [
-            f"mkdir /vmfs/volumes/{datastore}/{new_vm_name}",
-            f"vmkfstools -i /vmfs/volumes/{datastore}/{source_vm_name}/{source_vm_name}.vmdk /vmfs/volumes/{datastore}/{new_vm_name}/{new_vm_name}.vmdk -d thin",
-            f"cp /vmfs/volumes/{datastore}/{source_vm_name}/{source_vm_name}.vmx /vmfs/volumes/{datastore}/{new_vm_name}/{new_vm_name}.vmx",
-            f"sed -i 's/displayName = \"{source_vm_name}\"/displayName = \"{new_vm_name}\"/g' /vmfs/volumes/{datastore}/{new_vm_name}/{new_vm_name}.vmx",
-            f"vim-cmd solo/registervm /vmfs/volumes/{datastore}/{new_vm_name}/{new_vm_name}.vmx"
+        progress_msg = await update.message.reply_text(
+            f"Cloning in progress from **{source_datastore_name}** to **{destination_datastore_name}**..."
+        )
+
+        # List of steps with dynamically selected datastores
+        steps = [
+            ("Creating VM directory", f"mkdir /vmfs/volumes/{destination_datastore_name}/{new_vm_name}"),
+            (
+                "Cloning disk",
+                f"vmkfstools -i /vmfs/volumes/{source_datastore_name}/{source_vm_folder}/{source_vm_name}.vmdk "
+                f"/vmfs/volumes/{destination_datastore_name}/{new_vm_name}/{new_vm_name}.vmdk -d thin"
+            ),
+            (
+                "Copying VMX file",
+                f"cp /vmfs/volumes/{source_datastore_name}/{source_vm_folder}/{source_vm_name}.vmx "
+                f"/vmfs/volumes/{destination_datastore_name}/{new_vm_name}/{new_vm_name}.vmx"
+            ),
+            (
+                "Updating display name",
+                f"sed -i 's/displayName = \"{source_vm_name}\"/displayName = \"{new_vm_name}\"/g' "
+                f"/vmfs/volumes/{destination_datastore_name}/{new_vm_name}/{new_vm_name}.vmx"
+            ),
+            (
+                "Updating VM disk reference",
+                f"sed -i 's/{source_vm_name}.vmdk/{new_vm_name}.vmdk/g' "
+                f"/vmfs/volumes/{destination_datastore_name}/{new_vm_name}/{new_vm_name}.vmx"
+            ),
+            (
+                "Ensuring unique UUID",
+                f"sed -i '/uuid.bios/d' /vmfs/volumes/{destination_datastore_name}/{new_vm_name}/{new_vm_name}.vmx && "
+                f"echo 'uuid.action = \"create\"' >> /vmfs/volumes/{destination_datastore_name}/{new_vm_name}/{new_vm_name}.vmx"
+            ),
+            (
+                "Registering VM",
+                f"vim-cmd solo/registervm /vmfs/volumes/{destination_datastore_name}/{new_vm_name}/{new_vm_name}.vmx"
+            )
         ]
-        
-        for command in commands:
+
+        # Execute each step and update progress
+        total_steps = len(steps)
+        for i, (description, command) in enumerate(steps, start=1):
+            await context.bot.edit_message_text(
+                chat_id=update.message.chat_id,
+                message_id=progress_msg.message_id,
+                text=f"Step {i}/{total_steps}: {description}..."
+            )
+
             stdin, stdout, stderr = ssh.exec_command(command)
             exit_status = stdout.channel.recv_exit_status()
             if exit_status != 0:
-                await update.message.reply_text(f"ERROR: {stderr.read().decode().strip()}")
+                error = stderr.read().decode().strip()
+                await update.message.reply_text(f"ERROR during '{description}': {error}")
                 ssh.close()
                 return
-        
-        await update.message.reply_text(f"Thin clone of VM '{source_vm_name}' created as '{new_vm_name}' and registered in ESXi.")
-    
+
+        # All steps completed successfully
+        await context.bot.edit_message_text(
+            chat_id=update.message.chat_id,
+            message_id=progress_msg.message_id,
+            text=f"Thin clone of VM '{source_vm_name}' created as '{new_vm_name}' from datastore '{source_datastore_name}' to '{destination_datastore_name}' and registered in ESXi."
+        )
+
     except Exception as e:
         await update.message.reply_text(f"ERROR: Failed to clone VM: {str(e)}")
     finally:
+        Disconnect(si)
         ssh.close()
+
 
 @permission_required('delete')
 async def delete_vm(update: Update, context: CallbackContext):
@@ -263,6 +350,7 @@ async def delete_vm(update: Update, context: CallbackContext):
     vm_name = args[0]
     si = connect_to_esxi()
     content = si.RetrieveContent()
+    
     vm = next((vm for vm in content.viewManager.CreateContainerView(
         content.rootFolder, [vim.VirtualMachine], True).view if vm.name == vm_name), None)
     
@@ -277,11 +365,44 @@ async def delete_vm(update: Update, context: CallbackContext):
             task = vm.PowerOff()
             while task.info.state not in [vim.TaskInfo.State.success, vim.TaskInfo.State.error]:
                 pass
-            
+        
+        # Get VM's datastore path
+        vm_path = vm.config.files.vmPathName  # Example: "[datastore1] VM_NAME/VM_NAME.vmx"
+        datastore_name, vm_folder = vm_path.strip("[]").split("] ")
+        vm_folder = os.path.dirname(vm_folder)
+
         # Unregister the VM
         vm.UnregisterVM()
         await update.message.reply_text(f"VM '{vm_name}' has been unregistered from ESXi.")
-        
+
+        # Get Datastore and Datacenter objects
+        datastore = next((ds for ds in content.viewManager.CreateContainerView(
+            content.rootFolder, [vim.Datastore], True).view if ds.name == datastore_name), None)
+
+        datacenter = next((dc for dc in content.rootFolder.childEntity if isinstance(dc, vim.Datacenter)), None)
+        if not datacenter:
+            await update.message.reply_text("ERROR: No datacenter found.")
+            Disconnect(si)
+            return
+
+        # Delete VM files from datastore
+        if datastore:
+            file_manager = content.fileManager
+            delete_task = file_manager.DeleteDatastoreFile_Task(
+                name=f"[{datastore_name}] {vm_folder}",
+                datacenter=datacenter
+            )
+
+            while delete_task.info.state not in [vim.TaskInfo.State.success, vim.TaskInfo.State.error]:
+                pass
+
+            if delete_task.info.state == vim.TaskInfo.State.success:
+                await update.message.reply_text(f"VM storage '{vm_folder}' deleted from datastore '{datastore_name}'.")
+            else:
+                await update.message.reply_text(f"ERROR: Failed to delete VM storage '{vm_folder}'.")
+        else:
+            await update.message.reply_text(f"ERROR: Datastore '{datastore_name}' not found.")
+
     except Exception as e:
         await update.message.reply_text(f"ERROR: Failed to delete VM: {str(e)}")
     finally:
@@ -301,6 +422,7 @@ async def help_command(update: Update, context: CallbackContext):
         "/reset <vm> - Reset a specific VM by name.\n"
         "/screenshot <vm> - Take a screenshot of a specific VM.\n"
         "/clone <vm> <new_vm> - Clone specific VM by name.\n"
+        "/delete <vm> - Destroy and delete a specific VM.\n"
         "/myid - Get your Telegram user ID (for setup).\n"
         "/help - Show this help message."
     )
